@@ -1,0 +1,304 @@
+# Sky Auger Internal SpaceWire Architecture
+
+This document describes the actual internal implementation of the SpaceWire subsystem
+within the Earendel/sw repository (`bridge/` module). It is specific to the Sky Auger /
+ORTHUS project and should be used alongside the API references when writing or reviewing
+flight-bound code.
+
+---
+
+## Top-Level Module Structure
+
+```
+bridge/
+├── source/
+│   ├── spw/           # SpaceWire channel management
+│   │   └── spw_channel.c
+│   ├── uio/           # Userspace I/O subsystem (mediates SPW ↔ application)
+│   │   ├── uio_channel.c
+│   │   └── uio_socket.c
+│   ├── rtos/          # RTOS abstraction (mutexes, threads, semaphores, timers)
+│   │   └── rtos.c
+│   └── sim_if/        # Simulation environment interface
+│       └── sim_if.c
+├── tools/
+│   ├── build_app           # Build pipeline entry point
+│   ├── build_app_unfiltered
+│   ├── build_mod           # Module-level source discovery
+│   └── makefile_mod        # GNU Make delegate
+```
+
+---
+
+## SpaceWire Channel Management (`spw_channel.c`)
+
+### Core Structures
+
+Channels are **statically allocated** — no dynamic memory:
+
+```c
+/* Statically allocated channel arrays */
+static spw_channel_element_t spw_channel_elements[SPW_MAX_CHANNEL_ELEMENTS];
+static spw_channel_t         spw_channels[SPW_MAX_CHANNELS];
+```
+
+The `spw_channel_t` struct carries the UIO mapping alongside SpaceWire identifiers:
+
+```c
+typedef struct {
+    uint8_t   uio_id;       // Maps this SPW channel to a UIO channel slot
+    uint8_t   dir;          // Direction: in, out, inout
+    uint8_t   device_id;    // STAR-Dundee device index (ground) or FPGA IF id (flight)
+    uint8_t   channel_id;   // SDK channel index within device
+    bool      is_open;      // Safety gate — prevents double-open
+} spw_channel_t;
+```
+
+### Safe Initialization Pattern
+
+All channels are zeroed and set to invalid before use:
+
+```c
+static void channel_clear(spw_channel_t *channel_ptr)
+{
+    channel_ptr->uio_id    = SPW_CHANNEL_ID_INVALID;
+    channel_ptr->is_open   = false;
+    // ... zero all other fields
+}
+```
+
+`spw_channel_open()` defensively returns `true` immediately if `is_open` is already set —
+preventing redundant state mutation. All pointer arguments are checked against `NULL` before
+dereferencing.
+
+### load_defs()
+
+Channel definitions are populated at startup by `load_defs()`, which reads properties
+(`uio_id`, `dir`, `device_id`, `channel_id`) from configuration and maps them into the
+static `spw_channels` array. This is the only place channel-to-UIO bindings are established.
+
+### Queued (Buffered) Mode
+
+Channels can be opened in queued mode to buffer incoming traffic when no receive operation
+is pending — equivalent to `buffered = 1` in `STAR_openChannelToLocalDevice()`. Always use
+queued mode for RX-capable channels to prevent packet loss.
+
+---
+
+## UIO Subsystem Integration (`uio_channel.c`, `uio_socket.c`)
+
+SpaceWire is a first-class interface kind within the UIO subsystem:
+
+```c
+// Attaching a SpaceWire channel to a UIO channel slot:
+uio_channel_set_spw(uio_channel_ptr, spw_channel_ptr);
+// This sets: uio_channel_ptr->if_kind = UIO_CHANNEL_IF_KIND_SPW
+//            uio_channel_ptr->spw     = spw_channel_ptr
+```
+
+The UIO layer handles:
+- POSIX error tracking via `errno` / `strerror(errno)`
+- Centralized event reporting via `EVR_REPORT_EVENT_3`
+- Socket loop stability via `uio_socket_error_increment()` and
+  `uio_socket_error_threshold_exceeded()` — halts on excessive consecutive failures
+- Endianness normalization via `util_platform_is_big_endian` during buffer copies
+
+> **Rule**: Flight code writes to `uio_id` slots, not directly to SpaceWire channel handles.
+> The UIO layer dispatches to the correct SPW channel based on `UIO_CHANNEL_IF_KIND_SPW`.
+
+---
+
+## Camera → SpaceWire Dispatch Pattern
+
+Camera hardware commands are dispatched over SpaceWire via `spw_write()`. The typical
+pattern in `cam_model_caspex_cmv4k.c`:
+
+```c
+// Build a hex command buffer specific to the CMV4K register protocol
+static void build_reg_write_cmd(uint8_t *buf, uint16_t reg_addr, uint16_t value)
+{
+    buf[0] = CAM_CMD_WRITE_REG;
+    buf[1] = (uint8_t)(reg_addr >> 8);
+    buf[2] = (uint8_t)(reg_addr & 0xFF);
+    buf[3] = (uint8_t)(value >> 8);
+    buf[4] = (uint8_t)(value & 0xFF);
+}
+
+// Dispatch via spw_write():
+uint8_t cmd_buf[CAM_CMD_BUF_SIZE];
+build_reg_write_cmd(cmd_buf, reg_addr, value);
+bool ok = spw_write(spw_channel_ptr, cmd_buf, sizeof(cmd_buf));
+if (!ok) {
+    evr_report_error_2(CAM_EVR_SPW_WRITE_FAIL, reg_addr);
+}
+```
+
+> **Note**: Many advanced configuration commands (gain, exposure) are currently stubbed
+> with `log_store()` placeholders. These must be replaced with actual `spw_write()` calls
+> before delivery.
+
+The camera execution model is **asynchronous**:
+- A tick-based RTOS semaphore drives `cam_main()` each cycle
+- `cam_main()` evaluates pending flags set by the command router and dispatches actions
+- State mutations are protected by `lock()`/`unlock()` on the device mutex
+- Long-running hardware operations do not block the command ingester
+
+---
+
+## RTOS Abstraction (`rtos.c`)
+
+`rtos_initialize(uint flags)` is the single entry point for all OS primitive setup:
+mutexes, threads, semaphores, timers. `flags` is a bitmask — only requested subsystems
+are initialized. Status variables are pessimistically pre-set to `RTOS_ERROR` and only
+overwritten on explicit success.
+
+`rtos_terminate()` mirrors `rtos_initialize()` exactly — every primitive initialized must
+be torn down.
+
+---
+
+## Build System
+
+The build pipeline is a stateful Bash chain:
+
+```
+build_app
+  └── build_app_unfiltered
+        └── build_mod          ← discovers .c/.cpp/.fc/.vml sources per module
+              └── makefile_mod ← invokes GNU Make for compilation and .a / ELF linking
+```
+
+Key behaviors:
+- Any `$?` != 0 sets `build_result = -1` and skips linking (prevents malformed artifacts)
+- Override with `--force_link` only in emergencies — never for delivery builds
+- Exported uppercase environment variables carry configuration to Make
+- Output is routed through `egrep` to surface only warnings and errors
+- Source file types: `.c`, `.cpp` (flight logic), `.fc` (table configs), `.vml` (Virtual
+  Machine Language — compiled separately, linked into final binary)
+
+---
+
+## Code Style Standards
+
+All flight C code follows these conventions. Produce code in this style when writing
+for Sky Auger.
+
+### File Header
+
+```c
+/****************************************************************************
+*
+* File: spw_channel.c
+*
+* Description:
+*   This file implements the SpaceWire channels, and is responsible for
+*   interfacing the software to SpaceWire hardware.
+*
+*                           COPYRIGHT NOTICE
+*            Copyright (C) 2026, Rhea Space Activity, Inc.
+*                         All rights reserved
+*
+*   License from Rhea Space Activity required.
+*
+****************************************************************************/
+```
+
+### Section Banners (in order)
+
+```c
+/********** macros **********/
+
+/********** module globals **********/
+static spw_channel_t *id_map[UIO_NUM_CHANNELS];
+
+/********** globals **********/
+bool spw_debug = true;
+
+/********** prototypes for private functions **********/
+
+/********** private functions **********/
+
+/********** public functions **********/
+```
+
+### Function Header
+
+```c
+/**************************************************************************
+*
+* Function: spw_channel_open
+*
+* Description: Open the given SpaceWire channel
+* Entry:
+*   channel_ptr is a valid, initialized spw_channel_t
+*   channel_ptr->is_open is false
+* Exit:
+*   if successful
+*       channel is open, channel_ptr->is_open = true
+*   else
+*       no state changes; error logged via EVR_REPORT_EVENT_*
+* Function return:
+*   true  if channel successfully opened, or was already open
+*   false otherwise
+* Globals:
+*   spw_debug  read
+* Author: [Author]
+* Creation date: MM/DD/YYYY
+**************************************************************************/
+```
+
+### Naming and Style Rules
+
+- Pointer variables use `_ptr` suffix: `channel_ptr`, `element_ptr`
+- Single-line comments use `//` in C99 code
+- Internal state variables use `/* globals */` and `/* module globals */` banners
+- Boolean success variables **default to `false`** and flip to `true` only on complete success
+  (pessimistic safety model — never optimistic)
+- All pointer arguments checked `!= NULL` before dereferencing
+- Anomalies logged centrally via `evr_report_error_2()` or `EVR_REPORT_EVENT_*` macros —
+  never silently swallowed
+
+---
+
+## Known Channel / Port Mapping (ORTHUS / Brick Mk4)
+
+This mapping was hardware-verified on the ORTHUS dev machine with Brick Mk4 + CMV4000.
+It resolves HSI-001 (pre-CDR HSI item).
+
+| Layer | Identifier | Maps to | Purpose |
+|---|---|---|---|
+| STAR-API channel index | 0 | SDK config service | Reserved — do not use for data |
+| STAR-API channel index | 1 OUT (`tmCmdTxChannel`) | Router FIFO port 5 | TC commands (0x20) routed out port 2 to camera |
+| STAR-API channel index | 1 IN  (`tmCmdRxChannel`) | Router FIFO port 5 | TM replies (0x21) received back |
+| STAR-API channel index | 2 IN  (`videoRxChannel`) | Router FIFO port 6 | Video frames (0x22) inbound |
+| Physical enclosure "Port 1" | — | Router port 2 | One-based; offset by internal config port 0 |
+
+**Opening channel index 1 OUT and channel index 1 IN simultaneously is safe** — the SDK
+returns independent `STAR_CHANNEL_ID` handles for TX and RX directions. This is confirmed
+supported by SDK v6.01 in single-threaded use.
+
+**`(STAR_CHANNEL_ID)0` is the SDK invalid/unset handle sentinel** (equivalent to `NULL`).
+It is NOT "channel index 0" (the config service). These are completely different types:
+- Channel index → `U8` argument passed into `STAR_openChannelToLocalDevice()`
+- `STAR_CHANNEL_ID` → opaque handle returned by that call
+
+Always initialize `STAR_CHANNEL_ID` fields to `(STAR_CHANNEL_ID)0` and check before use.
+
+---
+
+## Known Issues / Open Items (camera_c reference implementation)
+
+These were identified during ORTHUS hardware verification and should be fixed before
+the patterns are reproduced in flight code:
+
+1. **`packet_length` byte assembly**: Should use `header_bytes[1..4]`, not `[2..5]` — latent
+   bug (harmless until `packet_length` is used for logic).
+2. **`frame_id` width**: Should be `uint8_t`, not `uint16_t` — 8-bit per ICD Table 5.
+3. **`protocol_id` field**: Stores `PACKET_LENGTH(7:0)` due to MSB extraction; actual
+   `PROTO_ID` (0x55) is at `(uint8_t)(buf[0] & 0xFF)` (raw byte 1 = LSB of word 0).
+4. **`SPACEWIRE_BRICK_MK4_PORT_COUNT`**: Defined as 5, should be 6. Workaround hardcoded
+   in `logLinkStatus`.
+5. **ICD header field extraction**: `header_bytes[i] = MSB of word[i] = raw_byte[2i]`.
+   PROTO_ID is at `raw_byte[1]` (LSB of word 0) and is not captured by MSB extraction.
+6. **ScExecIf bridge**: C/C++ bridge path (`sc_exec_if`) to be reassessed for full-C
+   flight code — `extern "C"` wrapping may not be needed.

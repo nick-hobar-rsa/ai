@@ -1,0 +1,6 @@
+[submodule "karpathy/autoresearch-macos"]
+	path = karpathy/autoresearch-macos
+	url = https://github.com/miolini/autoresearch-macos.git
+[submodule "llama.cpp"]
+	path = llama.cpp
+	url = https://github.com/ggerganov/llama.cpp.git
