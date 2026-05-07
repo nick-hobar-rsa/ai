@@ -1,0 +1,37 @@
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Build directories & compiled code
+build/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Temporary & Save files
+*.sav
+*.sav2
+*.inp
+*.out
+
+# Python virtual environments & locks
+venv/
+env/
+.env
+uv.lock
+poetry.lock
+
+# AI Model Weights (CRITICAL to ignore)
+*.gguf
+*.bin
+*.pt
+*.pth
+*.safetensors
+
+# Editor/IDE specific files
+.vscode/
+.idea/

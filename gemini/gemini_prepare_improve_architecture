@@ -1,0 +1,61 @@
+#!/bin/bash
+
+# ==============================================================================
+# Mission-Critical Architecture Preparation Script
+# Generates trimmed directory tree and concatenated headers for the Master Chat
+# ==============================================================================
+
+OUTPUT_DIR="architecture_prep"
+TREE_FILE="$OUTPUT_DIR/directory_structure.txt"
+HEADERS_FILE="$OUTPUT_DIR/all_headers.txt"
+
+# Directories to aggressively ignore
+SKY_AUGER_IGNORE_PATTERN="doc|Documentation|vendor|obj|bin|logs|build|.git|python_api|cpp_api|images|old_images|xiphos|ros2_xiphos|camera_cpp|camera_cpp_old|star_system_v6.01|c_cpp_transition_archive"
+IGNORE_PATTERN="$SKY_AUGER_IGNORE_PATTERN"
+
+echo "Initializing Architecture Prep..."
+
+# 1. Create fresh output directory
+mkdir -p "$OUTPUT_DIR"
+rm -f "$TREE_FILE" "$HEADERS_FILE"
+
+# 2. Generate the Top-Level Global View
+echo "-> Capturing top-level repository context..."
+echo "========================================" > "$TREE_FILE"
+echo "TOP LEVEL REPOSITORY CONTENTS (Unfiltered)" >> "$TREE_FILE"
+echo "========================================" >> "$TREE_FILE"
+# tree -L 2 gives a clean, depth-2 view of the root directory
+tree -L 2 >> "$TREE_FILE"
+echo -e "\n\n" >> "$TREE_FILE"
+
+# 3. Generate the Trimmed Tree (Filtering out C++ files as well)
+echo "-> Generating trimmed mission-critical directory tree..."
+echo "========================================" >> "$TREE_FILE"
+echo "MISSION-CRITICAL DOMAINS (Trimmed Tree)" >> "$TREE_FILE"
+echo "========================================" >> "$TREE_FILE"
+# Appending |*.cpp|*.hpp filters out stray C++ files even in non-ignored folders
+tree -I "$IGNORE_PATTERN|*.cpp|*.hpp" >> "$TREE_FILE"
+echo "   Tree saved to: $TREE_FILE"
+
+# 4. Concatenate Target Header Files
+echo "-> Concatenating mission-critical .h files..."
+# Find all .h files, completely pruning the ignored directories from the search path
+find . -type d | grep -E "$IGNORE_PATTERN" | sed 's/^/-path /; s/$/ -prune -o /' > .ignore_paths.tmp
+IGNORE_ARGS=$(cat .ignore_paths.tmp | tr '\n' ' ')
+
+# Construct and execute the find command (strictly targeting *.h, ignoring C++ headers natively)
+eval "find . $IGNORE_ARGS -name '*.h' -print" | while read -r file; do
+    echo "========================================" >> "$HEADERS_FILE"
+    echo "FILE: $file" >> "$HEADERS_FILE"
+    echo "========================================" >> "$HEADERS_FILE"
+    cat "$file" >> "$HEADERS_FILE"
+    echo -e "\n\n" >> "$HEADERS_FILE"
+done
+
+rm -f .ignore_paths.tmp
+echo "   Headers concatenated to: $HEADERS_FILE"
+
+echo "========================================================================"
+echo "SUCCESS! Both files are ready in the '$OUTPUT_DIR' folder."
+echo "Upload '$TREE_FILE' and '$HEADERS_FILE' to the Master Chat."
+echo "========================================================================"
