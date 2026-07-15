@@ -1,0 +1,82 @@
+#!/bin/bash
+
+# ==============================================================================
+# Unified Mission-Critical Architecture Preparation Script
+# Generates trimmed directory tree, extracts Python signatures, and concatenates
+# C/C++ headers for the AI Agent Master Chat.
+# ==============================================================================
+
+OUTPUT_DIR="architecture_prep"
+TREE_FILE="$OUTPUT_DIR/directory_structure.txt"
+PY_SIGNATURES_FILE="$OUTPUT_DIR/python_signatures.txt"
+CPP_HEADERS_FILE="$OUTPUT_DIR/all_headers.txt"
+
+# Combined ignore pattern for Python and C++ environments
+IGNORE_PATTERN="venv|.venv|env|.env|__pycache__|.pytest_cache|.mypy_cache|build|dist|egg-info|tests|docs|doc|Documentation|vendor|obj|bin|logs|.git|python_api|cpp_api|images|old_images|xiphos|ros2_xiphos|camera_cpp|camera_cpp_old|star_system_v6.01|c_cpp_transition_archive"
+
+echo "Initializing Unified Architecture Prep..."
+
+# 1. Create fresh output directory
+mkdir -p "$OUTPUT_DIR"
+rm -f "$TREE_FILE" "$PY_SIGNATURES_FILE" "$CPP_HEADERS_FILE"
+
+# 2. Generate the Top-Level Global View
+echo "-> Capturing top-level repository context..."
+echo "========================================" > "$TREE_FILE"
+echo "TOP LEVEL REPOSITORY CONTENTS (Unfiltered)" >> "$TREE_FILE"
+echo "========================================" >> "$TREE_FILE"
+tree -L 2 >> "$TREE_FILE"
+echo -e "\n\n" >> "$TREE_FILE"
+
+# 3. Generate the Trimmed Tree
+echo "-> Generating trimmed mission-critical directory tree..."
+echo "========================================" >> "$TREE_FILE"
+echo "MISSION-CRITICAL DOMAINS (Trimmed Tree)" >> "$TREE_FILE"
+echo "========================================" >> "$TREE_FILE"
+tree -I "$IGNORE_PATTERN" >> "$TREE_FILE"
+echo "   Tree saved to: $TREE_FILE"
+
+# 4. Generate dynamic find ignore arguments
+echo "-> Generating ignore paths for find operations..."
+find . -type d | grep -E "$IGNORE_PATTERN" | sed 's/^/-path /; s/$/ -prune -o /' > .ignore_paths.tmp
+IGNORE_ARGS=$(cat .ignore_paths.tmp | tr '\n' ' ')
+
+# 5. Extract Python Signatures
+echo "-> Extracting class and function signatures from .py files..."
+echo "========================================" > "$PY_SIGNATURES_FILE"
+echo "PYTHON API SKELETON (Classes, Methods, Decorators)" >> "$PY_SIGNATURES_FILE"
+echo "========================================" >> "$PY_SIGNATURES_FILE"
+
+eval "find . $IGNORE_ARGS -name '*.py' -print" | while read -r file; do
+    echo "----------------------------------------" >> "$PY_SIGNATURES_FILE"
+    echo "FILE: $file" >> "$PY_SIGNATURES_FILE"
+    echo "----------------------------------------" >> "$PY_SIGNATURES_FILE"
+    grep -E '^\s*(class |def |async def |@)' "$file" >> "$PY_SIGNATURES_FILE"
+    echo -e "\n" >> "$PY_SIGNATURES_FILE"
+done
+echo "   Python signatures extracted to: $PY_SIGNATURES_FILE"
+
+# 6. Concatenate C/C++ Header Files
+echo "-> Concatenating mission-critical C/C++ header files..."
+echo "========================================" > "$CPP_HEADERS_FILE"
+echo "C/C++ API HEADERS" >> "$CPP_HEADERS_FILE"
+echo "========================================" >> "$CPP_HEADERS_FILE"
+
+# Added *.hpp alongside *.h support for comprehensive C++ coverage
+eval "find . $IGNORE_ARGS \( -name '*.h' -o -name '*.hpp' \) -print" | while read -r file; do
+    echo "========================================" >> "$CPP_HEADERS_FILE"
+    echo "FILE: $file" >> "$CPP_HEADERS_FILE"
+    echo "========================================" >> "$CPP_HEADERS_FILE"
+    cat "$file" >> "$CPP_HEADERS_FILE"
+    echo -e "\n\n" >> "$CPP_HEADERS_FILE"
+done
+echo "   C/C++ Headers concatenated to: $CPP_HEADERS_FILE"
+
+# Clean up temp file
+rm -f .ignore_paths.tmp
+
+# 7. Final Output
+echo "========================================================================"
+echo "SUCCESS! All files are ready in the '$OUTPUT_DIR' folder."
+echo "Upload '$TREE_FILE', '$PY_SIGNATURES_FILE', and '$CPP_HEADERS_FILE' to the Master Chat."
+echo "========================================================================"

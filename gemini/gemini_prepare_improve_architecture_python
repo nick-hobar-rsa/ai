@@ -1,0 +1,64 @@
+#!/bin/bash
+
+# ==============================================================================
+# Mission-Critical Python Architecture Preparation Script
+# Generates trimmed directory tree and extracts API signatures for the Master Chat
+# ==============================================================================
+
+OUTPUT_DIR="architecture_prep"
+TREE_FILE="$OUTPUT_DIR/directory_structure.txt"
+SIGNATURES_FILE="$OUTPUT_DIR/python_signatures.txt"
+
+# Directories to aggressively ignore (Python focused)
+IGNORE_PATTERN="venv|.venv|env|.env|__pycache__|.pytest_cache|.mypy_cache|build|dist|egg-info|tests|docs|logs|.git"
+
+echo "Initializing Python Architecture Prep..."
+
+# 1. Create fresh output directory
+mkdir -p "$OUTPUT_DIR"
+rm -f "$TREE_FILE" "$SIGNATURES_FILE"
+
+# 2. Generate the Top-Level Global View
+echo "-> Capturing top-level repository context..."
+echo "========================================" > "$TREE_FILE"
+echo "TOP LEVEL REPOSITORY CONTENTS (Unfiltered)" >> "$TREE_FILE"
+echo "========================================" >> "$TREE_FILE"
+tree -L 2 >> "$TREE_FILE"
+echo -e "\n\n" >> "$TREE_FILE"
+
+# 3. Generate the Trimmed Tree
+echo "-> Generating trimmed mission-critical directory tree..."
+echo "========================================" >> "$TREE_FILE"
+echo "MISSION-CRITICAL DOMAINS (Trimmed Tree)" >> "$TREE_FILE"
+echo "========================================" >> "$TREE_FILE"
+tree -I "$IGNORE_PATTERN" >> "$TREE_FILE"
+echo "   Tree saved to: $TREE_FILE"
+
+# 4. Extract Python Signatures (The "Header" Equivalent)
+echo "-> Extracting class and function signatures from .py files..."
+echo "========================================" > "$SIGNATURES_FILE"
+echo "PYTHON API SKELETON (Classes, Methods, Decorators)" >> "$SIGNATURES_FILE"
+echo "========================================" >> "$SIGNATURES_FILE"
+
+# Find all .py files, pruning ignored directories
+find . -type d | grep -E "$IGNORE_PATTERN" | sed 's/^/-path /; s/$/ -prune -o /' > .ignore_paths.tmp
+IGNORE_ARGS=$(cat .ignore_paths.tmp | tr '\n' ' ')
+
+eval "find . $IGNORE_ARGS -name '*.py' -print" | while read -r file; do
+    echo "----------------------------------------" >> "$SIGNATURES_FILE"
+    echo "FILE: $file" >> "$SIGNATURES_FILE"
+    echo "----------------------------------------" >> "$SIGNATURES_FILE"
+    
+    # Grep for class definitions, function definitions (sync and async), and common decorators
+    grep -E '^\s*(class |def |async def |@)' "$file" >> "$SIGNATURES_FILE"
+    
+    echo -e "\n" >> "$SIGNATURES_FILE"
+done
+
+rm -f .ignore_paths.tmp
+echo "   Signatures extracted to: $SIGNATURES_FILE"
+
+echo "========================================================================"
+echo "SUCCESS! Both files are ready in the '$OUTPUT_DIR' folder."
+echo "Upload '$TREE_FILE' and '$SIGNATURES_FILE' to the Master Chat."
+echo "========================================================================"

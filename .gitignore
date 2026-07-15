@@ -35,3 +35,6 @@ poetry.lock
 # Editor/IDE specific files
 .vscode/
 .idea/
+
+# Other Model Specifics
+gemini/output/
