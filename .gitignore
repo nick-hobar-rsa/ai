@@ -38,3 +38,4 @@ poetry.lock
 
 # Other Model Specifics
 gemini/output/
+claude/personal/
